@@ -5,6 +5,10 @@ Student   : <your name here>
 
 Instructions:
     - review instructions in the course
+
+Justification: I believe I have met the requirements for this assignment. I process ATM data files with threads that all run at the same time
+and produce the correct balances for the test. On my computer it takes about 9.5ish seconds to run. I did get some design help from my Father
+for this assignment, but he did not write any code for it or give me answers.
 """
 
 # Don't import any other packages for this assignment
@@ -31,7 +35,16 @@ def main():
 
     bank = Bank()
 
-    # TODO - Add a ATM_Reader for each data file
+#start threads
+    threads = []
+    for file in data_files:
+        reader = ATM_Reader(file, bank) #create the thread for file
+        reader.start()
+        threads.append(reader)
+
+#join threads
+    for thread in threads:
+        thread.join()
 
     test_balances(bank)
 
@@ -39,21 +52,75 @@ def main():
 
 
 # ===========================================================================
-class ATM_Reader():
-    # TODO - implement this class here
-    ...
+#each ATM_Reader should be a thread
+class ATM_Reader(threading.Thread):
+    def __init__(self, filename, bank):
+        super().__init__()
+        self.filename = filename
+        self.bank = bank
+
+    def run(self):
+        with open(self.filename, 'r') as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith('#'):
+                    continue
+                parts = line.split(',')
+                if len(parts) != 3:
+                    continue
+                acct_num = int(parts[0])
+                trans_type = parts[1].strip()
+                amount = Money(parts[2])
+                self.bank.process_transaction(acct_num, trans_type, amount)
+
 
 
 # ===========================================================================
+#each account should have it's own lock
+account_lock = threading.Lock()
+
 class Account():
-    # TODO - implement this class here
-    ...
+    def __init__(self, number):
+        self.number = number
+        self.balance = Money('0.00')
+        self.lock = threading.Lock()
+
+    def deposit(self, amount):
+        with self.lock:
+            self.balance.add(amount)
+
+    def withdraw(self, amount):
+        with self.lock:
+            self.balance.sub(amount)
+
+    def get_balance(self):
+        with self.lock:
+            return self.balance
 
 
 # ===========================================================================
 class Bank():
-    # TODO - implement this class here
-    ...
+    def __init__(self):
+        self.accounts = {}
+
+#critical section?
+    def get_accounts(self,number):
+        if number not in self.accounts:
+            with account_lock:
+                if number not in self.accounts:
+                    self.accounts[number] = Account(number)
+        return self.accounts[number]
+    
+    def process_transaction(self, account_number, trans_type, amount):
+        account = self.get_accounts(account_number)
+        if trans_type == 'd':
+            account.deposit(amount)
+        elif trans_type == 'w':
+            account.withdraw(amount)
+
+    def get_balance(self, number):
+        account = self.get_accounts(number)
+        return account.get_balance()
 
 
 # ---------------------------------------------------------------------------
