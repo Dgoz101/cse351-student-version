@@ -1,57 +1,85 @@
 """
 Course    : CSE 351
 Assignment: 04
-Student   : <your name here>
+Student   : David Gosney
 
 Instructions:
     - review instructions in the course
 
-In order to retrieve a weather record from the server, Use the URL:
-
-f'{TOP_API_URL}/record/{name}/{recno}
-
+In order to retrieve a weather record from the server, use the URL:
+    f"{TOP_API_URL}/record/{name}/{recno}"
 where:
-
-name: name of the city
-recno: record number starting from 0
-
+    name: name of the city
+    recno: record number starting from 0
 """
 
-import time
+import threading
+import queue
 from common import *
+from cse351 import Log
 
-from cse351 import *
 
-THREADS = 0                 # TODO - set for your program
-WORKERS = 10
+THREADS = 200               
+WORKERS = 10                
 RECORDS_TO_RETRIEVE = 5000  # Don't change
 
 
-# ---------------------------------------------------------------------------
-def retrieve_weather_data():
-    # TODO - fill out this thread function (and arguments)
-    ...
+def retrieve_weather_data(task_q, result_q):
+    """
+    Fetch threads: pull (city, recno) from task_q, call server,
+    then push (city, date, temp) into result_q. Stops on None sentinel.
+    """
+    while True:
+        task = task_q.get()
+        if task is None:
+            # Notify queue and exit
+            task_q.task_done()
+            break
+        city, recno = task
+        data = get_data_from_server(f"{TOP_API_URL}/record/{city}/{recno}")
+        if data:
+            result_q.put((data['city'], data['date'], data['temp']))
+        task_q.task_done()
 
 
-# ---------------------------------------------------------------------------
-# TODO - Create Worker threaded class
+class Worker(threading.Thread):
+    def __init__(self, result_q, noaa):
+        super().__init__()
+        self.result_q = result_q
+        self.noaa = noaa
+        self.start()
+
+    def run(self):
+        while True:
+            item = self.result_q.get()
+            if item is None:
+                self.result_q.task_done()
+                break
+            city, date, temp = item
+            self.noaa.add_record(city, date, temp)
+            self.result_q.task_done()
 
 
-# ---------------------------------------------------------------------------
-# TODO - Complete this class
 class NOAA:
-
     def __init__(self):
-        ...
+        self.lock = threading.Lock()
+        # sum and count for each city
+        self.totals = {name: {'sum': 0.0, 'count': 0} for name in CITIES}
+
+    def add_record(self, city, date, temp):
+        with self.lock:
+            self.totals[city]['sum'] += temp
+            self.totals[city]['count'] += 1
 
     def get_temp_details(self, city):
-        return 0.0
+        with self.lock:
+            total = self.totals[city]['sum']
+            count = self.totals[city]['count']
+        return (total / count) if count > 0 else 0.0
 
 
-# ---------------------------------------------------------------------------
 def verify_noaa_results(noaa):
-
-    answers = {
+    expected = {
         'sandiego': 14.5004,
         'philadelphia': 14.865,
         'san_antonio': 14.638,
@@ -63,55 +91,76 @@ def verify_noaa_results(noaa):
         'los_angeles': 15.2346,
         'phoenix': 12.4404,
     }
-
     print()
     print('NOAA Results: Verifying Results')
     print('===================================')
     for name in CITIES:
-        answer = answers[name]
         avg = noaa.get_temp_details(name)
-
-        if abs(avg - answer) > 0.00001:
-            msg = f'FAILED  Expected {answer}'
-        else:
-            msg = f'PASSED'
-        print(f'{name:>15}: {avg:<10} {msg}')
+        status = 'PASSED' if abs(avg - expected[name]) < 1e-5 else f'FAILED  Expected {expected[name]}'
+        print(f'{name:>15}: {avg:<10} {status}')
     print('===================================')
 
 
-# ---------------------------------------------------------------------------
 def main():
-
     log = Log(show_terminal=True, filename_log='assignment.log')
     log.start_timer()
 
+    # Initialize NOAA aggregator
     noaa = NOAA()
 
-    # Start server
-    data = get_data_from_server(f'{TOP_API_URL}/start')
+    # Start the server session
+    get_data_from_server(f"{TOP_API_URL}/start")
 
-    # Get all cities number of records
+    # Retrieve city details
     print('Retrieving city details')
-    city_details = {}
-    name = 'City'
-    print(f'{name:>15}: Records')
+    print(f"{'City':>15}: Records")
     print('===================================')
-    for name in CITIES:
-        city_details[name] = get_data_from_server(f'{TOP_API_URL}/city/{name}')
-        print(f'{name:>15}: Records = {city_details[name]['records']:,}')
+    for city in CITIES:
+        info = get_data_from_server(f"{TOP_API_URL}/city/{city}")
+        records = info['records']
+        print(f"{city:>15}: Records = {records:,}")
     print('===================================')
 
-    records = RECORDS_TO_RETRIEVE
+    # Create bounded queues
+    task_q = queue.Queue(maxsize=10)
+    result_q = queue.Queue(maxsize=10)
 
-    # TODO - Create any queues, pipes, locks, barriers you need
+    # Launch worker threads
+    workers = [Worker(result_q, noaa) for _ in range(WORKERS)]
 
+    # Launch fetch threads
+    fetchers = []
+    for _ in range(THREADS):
+        t = threading.Thread(target=retrieve_weather_data, args=(task_q, result_q))
+        t.start()
+        fetchers.append(t)
 
+    # Enqueue all fetch tasks
+    for city in CITIES:
+        for recno in range(RECORDS_TO_RETRIEVE):
+            task_q.put((city, recno))
 
+    # Send sentinel None to fetch threads
+    for _ in range(THREADS):
+        task_q.put(None)
 
-    # End server - don't change below
-    data = get_data_from_server(f'{TOP_API_URL}/end')
-    print(data)
+    # Wait for all fetchers to finish
+    for t in fetchers:
+        t.join()
 
+    # Notify workers with sentinels
+    for _ in range(WORKERS):
+        result_q.put(None)
+
+    # Wait for workers to finish processing
+    for w in workers:
+        w.join()
+
+    # Shut down server
+    end_info = get_data_from_server(f"{TOP_API_URL}/end")
+    print(end_info)
+
+    # Verify correctness
     verify_noaa_results(noaa)
 
     log.stop_timer('Run time: ')
@@ -119,4 +168,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
