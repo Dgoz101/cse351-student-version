@@ -1,7 +1,7 @@
 """
 Course: CSE 351
 Assignment: 06
-Author: [Your Name]
+Author: David Gosney
 
 Instructions:
 
@@ -30,31 +30,36 @@ CANNY_THRESHOLD2 = 155
 # Allowed image extensions
 ALLOWED_EXTENSIONS = ['.jpg']
 
+
 # ---------------------------------------------------------------------------
 def create_folder_if_not_exists(folder_path):
     if not os.path.exists(folder_path):
         os.makedirs(folder_path)
         print(f"Created folder: {folder_path}")
 
+
 # ---------------------------------------------------------------------------
 def task_convert_to_grayscale(image):
     if len(image.shape) == 2 or (len(image.shape) == 3 and image.shape[2] == 1):
-        return image # Already grayscale
+        return image  # Already grayscale
     return cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
 
 # ---------------------------------------------------------------------------
 def task_smooth_image(image, kernel_size):
     return cv2.GaussianBlur(image, kernel_size, 0)
+
 
 # ---------------------------------------------------------------------------
 def task_detect_edges(image, threshold1, threshold2):
     if len(image.shape) == 3 and image.shape[2] == 3:
         print("Warning: Applying Canny to a 3-channel image. Converting to grayscale first for Canny.")
         image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    elif len(image.shape) == 3 and image.shape[2] != 1 : # Should not happen with typical images
+    elif len(image.shape) == 3 and image.shape[2] != 1:  # Should not happen with typical images
         print(f"Warning: Input image for Canny has an unexpected number of channels: {image.shape[2]}")
-        return image # Or raise error
+        return image  # Or raise error
     return cv2.Canny(image, threshold1, threshold2)
+
 
 # ---------------------------------------------------------------------------
 def process_images_in_folder(input_folder,              # input folder with images
@@ -73,7 +78,7 @@ def process_images_in_folder(input_folder,              # input folder with imag
             continue
 
         input_image_path = os.path.join(input_folder, filename)
-        output_image_path = os.path.join(output_folder, filename) # Keep original filename
+        output_image_path = os.path.join(output_folder, filename)  # Keep original filename
 
         try:
             # Read the image
@@ -101,6 +106,72 @@ def process_images_in_folder(input_folder,              # input folder with imag
 
     print(f"Finished processing. {processed_count} images processed into '{output_folder}'.")
 
+
+# ---------------------------------------------------------------------------
+# Worker for smoothing stage
+def smooth_worker(q_in, q_out):
+    while True:
+        filename = q_in.get()
+        if filename is None:
+            # Signal next stage that no more images will come
+            break
+
+        input_path = os.path.join(INPUT_FOLDER, filename)
+        img = cv2.imread(input_path)
+        if img is None:
+            continue
+
+        smoothed = task_smooth_image(img, GAUSSIAN_BLUR_KERNEL_SIZE)
+        output_path = os.path.join(STEP1_OUTPUT_FOLDER, filename)
+        cv2.imwrite(output_path, smoothed)
+
+        # Pass filename to next stage
+        q_out.put(filename)
+    return
+
+
+# ---------------------------------------------------------------------------
+# Worker for grayscale conversion stage
+def grayscale_worker(q_in, q_out):
+    while True:
+        filename = q_in.get()
+        if filename is None:
+            # Once sentinel received, propagate to next stage and exit
+            q_out.put(None)
+            break
+
+        input_path = os.path.join(STEP1_OUTPUT_FOLDER, filename)
+        img = cv2.imread(input_path)
+        if img is None:
+            continue
+
+        gray = task_convert_to_grayscale(img)
+        output_path = os.path.join(STEP2_OUTPUT_FOLDER, filename)
+        cv2.imwrite(output_path, gray)
+
+        # Pass filename to next stage
+        q_out.put(filename)
+
+
+# ---------------------------------------------------------------------------
+# Worker for edge detection stage
+def edges_worker(q_in):
+    while True:
+        filename = q_in.get()
+        if filename is None:
+            # No more images; exit
+            break
+
+        input_path = os.path.join(STEP2_OUTPUT_FOLDER, filename)
+        img = cv2.imread(input_path, cv2.IMREAD_GRAYSCALE)
+        if img is None:
+            continue
+
+        edges = task_detect_edges(img, CANNY_THRESHOLD1, CANNY_THRESHOLD2)
+        output_path = os.path.join(STEP3_OUTPUT_FOLDER, filename)
+        cv2.imwrite(output_path, edges)
+
+
 # ---------------------------------------------------------------------------
 def run_image_processing_pipeline():
     print("Starting image processing pipeline...")
@@ -112,17 +183,75 @@ def run_image_processing_pipeline():
     # - you are free to change anything in the program as long as you
     #   do all requirements.
 
-    # --- Step 1: Smooth Images ---
-    process_images_in_folder(INPUT_FOLDER, STEP1_OUTPUT_FOLDER, task_smooth_image,
-                             processing_args=(GAUSSIAN_BLUR_KERNEL_SIZE,))
+    # Create output folders if they don't exist
+    create_folder_if_not_exists(STEP1_OUTPUT_FOLDER)
+    create_folder_if_not_exists(STEP2_OUTPUT_FOLDER)
+    create_folder_if_not_exists(STEP3_OUTPUT_FOLDER)
 
-    # --- Step 2: Convert to Grayscale ---
-    process_images_in_folder(STEP1_OUTPUT_FOLDER, STEP2_OUTPUT_FOLDER, task_convert_to_grayscale)
+    # Decide on number of worker processes for each stage
+    num_cpu = mp.cpu_count()
+    num_smoothers = num_cpu
+    num_grays = num_cpu
+    num_edges = num_cpu
 
-    # --- Step 3: Detect Edges ---
-    process_images_in_folder(STEP2_OUTPUT_FOLDER, STEP3_OUTPUT_FOLDER, task_detect_edges,
-                             load_args=cv2.IMREAD_GRAYSCALE,        
-                             processing_args=(CANNY_THRESHOLD1, CANNY_THRESHOLD2))
+    # Create queues for inter-process communication
+    q1 = mp.Queue(maxsize=num_cpu * 2)
+    q2 = mp.Queue(maxsize=num_cpu * 2)
+    q3 = mp.Queue(maxsize=num_cpu * 2)
+
+    # Start smoother processes
+    smoothers = []
+    for _ in range(num_smoothers):
+        p = mp.Process(target=smooth_worker, args=(q1, q2))
+        p.start()
+        smoothers.append(p)
+
+    # Start grayscale converter processes
+    grays = []
+    for _ in range(num_grays):
+        p = mp.Process(target=grayscale_worker, args=(q2, q3))
+        p.start()
+        grays.append(p)
+
+    # Start edge detector processes
+    edgers = []
+    for _ in range(num_edges):
+        p = mp.Process(target=edges_worker, args=(q3,))
+        p.start()
+        edgers.append(p)
+
+    # Enqueue all filenames into q1
+    for filename in os.listdir(INPUT_FOLDER):
+        file_ext = os.path.splitext(filename)[1].lower()
+        if file_ext not in ALLOWED_EXTENSIONS:
+            continue
+        q1.put(filename)
+
+    # Send sentinel values to smoothing stage (one per smoother)
+    for _ in range(num_smoothers):
+        q1.put(None)
+
+    # Wait for all smoothers to finish
+    for p in smoothers:
+        p.join()
+
+    # At this point, all smoothing is done and q2 has received all real filenames
+    # Now send sentinel values to grayscale stage (one per grayscale worker)
+    for _ in range(num_grays):
+        q2.put(None)
+
+    # Wait for all grayscale converters to finish
+    for p in grays:
+        p.join()
+
+    # At this point, all grayscale conversion is done and q3 has received all real filenames
+    # Now send sentinel values to edge detection stage (one per edge worker)
+    for _ in range(num_edges):
+        q3.put(None)
+
+    # Wait for all edge detectors to finish
+    for p in edgers:
+        p.join()
 
     print("\nImage processing pipeline finished!")
     print(f"Original images are in: '{INPUT_FOLDER}'")
