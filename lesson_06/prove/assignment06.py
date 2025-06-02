@@ -1,7 +1,7 @@
 """
 Course: CSE 351
 Assignment: 06
-Author: David Gosney
+Author: [Your Name]
 
 Instructions:
 
