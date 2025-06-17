@@ -20,12 +20,15 @@ program however, describe how you could alter the program to display the found p
 position:
 
 What would be your strategy?
-
-<Answer here>
+I would keep track of the steps each thread is taking as it goes through the maze. I could call a list within
+explore to add each square into. Whenever a thread finds the exit, you can take that list and change it into a
+global variable like winning path, which I can then draw at the end in its own special color.
 
 Why would it work?
 
-<Answer here>
+Because every thread is keeping track of its trail, when the thread finds the exit, we have the route that it took.
+Then we just copy that route into a new variable and color the route differently. I believe that
+it would need to be copied over before all the threads stop to avoid overwrites. 
 
 """
 
@@ -77,9 +80,35 @@ def get_color():
     current_color_index += 1
     return color
 
-
 # TODO: Add any function(s) you need, if any, here.
 
+def explore(row, col, maze, color):
+    global stop, thread_count
+    if stop:
+        return
+    if not maze.can_move_here(row, col):
+        return
+    maze.move(row, col, color)
+    if maze.at_end(row, col):
+        stop = True
+        return
+    moves = maze.get_possible_moves(row, col)
+    if not moves:
+        return
+    children = []
+    for nr, nc in moves[1:]:
+        if stop:
+            break
+        new_color = get_color()
+        t = threading.Thread(target=explore, args=(nr, nc, maze, new_color))
+        t.daemon = True
+        thread_count += 1
+        t.start()
+        children.append(t)
+    first_r, first_c = moves[0]
+    explore(first_r, first_c, maze, color)
+    for t in children:
+        t.join()
 
 def solve_find_end(maze):
     """ Finds the end position using threads. Nothing is returned. """
@@ -87,8 +116,14 @@ def solve_find_end(maze):
     global stop
     stop = False
 
-
-
+    start_r, start_c = maze.get_start_pos()
+    initial_color = get_color()
+    t0 = threading.Thread(target=explore, args=(start_r, start_c, maze, initial_color))
+    t0.daemon = True
+    global thread_count
+    thread_count += 1
+    t0.start()
+    t0.join()
 
 def find_end(log, filename, delay):
     """ Do not change this function """
@@ -109,7 +144,7 @@ def find_end(log, filename, delay):
 
     done = False
     while not done:
-        if screen.play_commands(speed): 
+        if screen.play_commands(speed):
             key = cv2.waitKey(0)
             if key == ord('1'):
                 speed = SLOW_SPEED
@@ -121,7 +156,6 @@ def find_end(log, filename, delay):
                 done = True
         else:
             done = True
-
 
 def find_ends(log):
     """ Do not change this function """
@@ -148,13 +182,11 @@ def find_ends(log):
         find_end(log, filename, delay)
     log.write('*' * 40)
 
-
 def main():
     """ Do not change this function """
     sys.setrecursionlimit(5000)
     log = Log(show_terminal=True)
     find_ends(log)
-
 
 if __name__ == "__main__":
     main()

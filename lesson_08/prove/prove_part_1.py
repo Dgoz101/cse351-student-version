@@ -34,10 +34,22 @@ def solve_path(maze):
     """ Solve the maze and return the path found between the start and end positions.  
         The path is a list of positions, (x, y) """
     path = []
-    # TODO: Solve the maze recursively while tracking the correct path.
+    def recurse(r, c):
+        if not maze.can_move_here(r, c):
+            return False
+        maze.move(r, c, COLOR)
+        path.append((r, c))
+        if maze.at_end(r, c):
+            return True
+        for nr, nc in maze.get_possible_moves(r, c):
+            if recurse(nr, nc):
+                return True
+        path.pop()
+        maze.restore(r, c)
+        return False
 
-    # Hint: You can create an inner function to do the recursion
-
+    start_r, start_c = maze.get_start_pos()
+    recurse(start_r, start_c)
     return path
 
 
@@ -58,7 +70,7 @@ def get_path(log, filename):
 
     done = False
     while not done:
-        if screen.play_commands(speed): 
+        if screen.play_commands(speed):
             key = cv2.waitKey(0)
             if key == ord('1'):
                 speed = SLOW_SPEED
