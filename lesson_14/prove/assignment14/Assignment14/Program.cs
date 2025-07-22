@@ -55,7 +55,7 @@ class Program
         try
         {
             // File.ReadLines reads the file line by line without loading it all into memory.
-            foreach (string line in File.ReadLines("../../../runs.txt"))
+            foreach (string line in File.ReadLines("runs.txt"))
             {
                 string[] parts = line.Split(',');
 
